@@ -614,6 +614,19 @@ def quantity_to_ml(quantity, unit, density_kg_per_l=1.0):
     raise ValueError("Unsupported unit")
 
 
+def ml_to_quantity(quantity_ml, unit, density_kg_per_l=1.0):
+    """Convert an mL-equivalent quantity back to the selected calculator unit."""
+    if unit == "mL":
+        return quantity_ml
+    if unit == "US fl oz":
+        return quantity_ml / ML_PER_US_FL_OZ
+    if unit == "kg":
+        if density_kg_per_l <= 0:
+            raise ValueError("Density must be greater than 0.")
+        return (quantity_ml / 1000.0) * density_kg_per_l
+    raise ValueError("Unsupported unit")
+
+
 def calculate_base_quantities(
     num_candidates,
     num_benchmarks,
@@ -1164,6 +1177,61 @@ else:
         index=BOTTLE_SIZES_ML.index(250),
     )
 
+    st.markdown("#### Extra samples for other stages")
+    use_extra_stages = st.checkbox(
+        "Add extra samples for other stages",
+        value=False,
+        help=(
+            "Use this for additional preparation or testing stages such as dilution. "
+            "The stage quantity is packaging size × number of bottles and is added to the final total."
+        ),
+    )
+
+    extra_stages = []
+    if use_extra_stages:
+        num_extra_stages = int(st.number_input(
+            "Number of extra stages",
+            min_value=1,
+            max_value=10,
+            value=1,
+            step=1,
+        ))
+        st.caption(
+            "The loss / overage margin is already applied to candidate and benchmark quantities. "
+            "Extra-stage bottle quantities are added as entered and are not given an additional margin."
+        )
+        for i in range(num_extra_stages):
+            s1, s2, s3 = st.columns([1.6, 1.2, 1.2])
+            with s1:
+                stage_name = st.text_input(
+                    f"Stage {i + 1} name",
+                    value="Dilution" if i == 0 else f"Stage {i + 1}",
+                    key=f"extra_stage_name_{i}",
+                )
+            with s2:
+                package_size_ml = float(st.number_input(
+                    f"Packaging size for stage {i + 1} (mL)",
+                    min_value=0.0,
+                    value=200.0,
+                    step=10.0,
+                    key=f"extra_stage_pack_{i}",
+                ))
+            with s3:
+                bottles_required = int(st.number_input(
+                    f"Bottles required for stage {i + 1}",
+                    min_value=0,
+                    value=1,
+                    step=1,
+                    key=f"extra_stage_bottles_{i}",
+                ))
+
+            extra_stages.append({
+                "Stage": stage_name.strip() or f"Stage {i + 1}",
+                "Packaging size (mL)": package_size_ml,
+                "Bottles required": bottles_required,
+                "Quantity (mL)": package_size_ml * bottles_required,
+            })
+
     result = calculate_base_quantities(
         num_candidates=num_candidates,
         num_benchmarks=num_benchmarks,
@@ -1176,43 +1244,99 @@ else:
         density_kg_per_l=density,
     )
 
+    extra_stage_ml = sum(stage["Quantity (mL)"] for stage in extra_stages)
+    extra_stage_quantity = ml_to_quantity(extra_stage_ml, unit, density)
+    grand_total_per_base = (
+        result["total_candidate_with_loss"]
+        + result["total_benchmark_with_loss"]
+        + extra_stage_quantity
+    )
+    number_of_bases = len(base_names) if use_base_names else 1
+    grand_total_all_bases = grand_total_per_base * number_of_bases
+
     st.markdown("### Results")
     required_tab, bottles_tab = st.tabs(["Required Quantity", "Benchmark Bottles"])
 
-    # Only quantities including the additional margin are shown in the Required Quantity tab.
+    # Only quantities including the additional margin are shown for candidates/benchmarks.
+    # Extra-stage quantities are exact package quantities and are added to the grand total.
     rows = []
+    extra_stage_rows = []
     for base_name in base_names:
         candidate_row = {
             "Type": "Candidate",
+            "Item / stage": "Candidate products",
             "Number of products": num_candidates,
             "Samples per product": samples_per_candidate,
+            "Packaging size (mL)": np.nan,
+            "Bottles required": np.nan,
             f"Quantity per product incl. {loss_margin_pct:.1f}% margin ({unit})": result["per_candidate_with_loss"],
-            f"Total required incl. {loss_margin_pct:.1f}% margin ({unit})": result["total_candidate_with_loss"],
+            f"Total required ({unit})": result["total_candidate_with_loss"],
         }
         benchmark_row = {
             "Type": "Benchmark",
+            "Item / stage": "Benchmark products",
             "Number of products": num_benchmarks,
             "Samples per product": samples_per_benchmark,
+            "Packaging size (mL)": np.nan,
+            "Bottles required": np.nan,
             f"Quantity per product incl. {loss_margin_pct:.1f}% margin ({unit})": result["per_benchmark_with_loss"],
-            f"Total required incl. {loss_margin_pct:.1f}% margin ({unit})": result["total_benchmark_with_loss"],
+            f"Total required ({unit})": result["total_benchmark_with_loss"],
         }
         if use_base_names:
             candidate_row = {"Base name": base_name or "(not specified)", **candidate_row}
             benchmark_row = {"Base name": base_name or "(not specified)", **benchmark_row}
         rows.extend([candidate_row, benchmark_row])
 
+        for stage in extra_stages:
+            stage_quantity_unit = ml_to_quantity(stage["Quantity (mL)"], unit, density)
+            stage_row = {
+                "Type": "Extra stage",
+                "Item / stage": stage["Stage"],
+                "Number of products": np.nan,
+                "Samples per product": np.nan,
+                "Packaging size (mL)": stage["Packaging size (mL)"],
+                "Bottles required": stage["Bottles required"],
+                f"Quantity per product incl. {loss_margin_pct:.1f}% margin ({unit})": np.nan,
+                f"Total required ({unit})": stage_quantity_unit,
+            }
+            if use_base_names:
+                stage_row = {"Base name": base_name or "(not specified)", **stage_row}
+            rows.append(stage_row)
+            extra_stage_rows.append(stage_row.copy())
+
+        total_row = {
+            "Type": "TOTAL",
+            "Item / stage": "Grand total incl. extra stages" if use_extra_stages else "Grand total",
+            "Number of products": np.nan,
+            "Samples per product": np.nan,
+            "Packaging size (mL)": np.nan,
+            "Bottles required": np.nan,
+            f"Quantity per product incl. {loss_margin_pct:.1f}% margin ({unit})": np.nan,
+            f"Total required ({unit})": grand_total_per_base,
+        }
+        if use_base_names:
+            total_row = {"Base name": base_name or "(not specified)", **total_row}
+        rows.append(total_row)
+
     summary_df = pd.DataFrame(rows)
 
     with required_tab:
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Per candidate incl. margin", f"{result['per_candidate_with_loss']:.2f} {unit}")
-        m2.metric("All candidates incl. margin", f"{result['total_candidate_with_loss']:.2f} {unit}")
-        m3.metric("Per benchmark incl. margin", f"{result['per_benchmark_with_loss']:.2f} {unit}")
-        m4.metric("All benchmarks incl. margin", f"{result['total_benchmark_with_loss']:.2f} {unit}")
+        m1.metric("All candidates incl. margin / base", f"{result['total_candidate_with_loss']:.2f} {unit}")
+        m2.metric("All benchmarks incl. margin / base", f"{result['total_benchmark_with_loss']:.2f} {unit}")
+        m3.metric("Extra stages / base", f"{extra_stage_quantity:.2f} {unit}")
+        m4.metric("Grand total / base", f"{grand_total_per_base:.2f} {unit}")
         st.dataframe(summary_df, use_container_width=True)
-        if use_base_names and len(base_names) > 1:
+
+        if use_extra_stages:
             st.caption(
-                f"The required quantity rows are duplicated for each of the {len(base_names)} bases entered."
+                f"Extra stages add {extra_stage_ml:.1f} mL equivalent ({extra_stage_quantity:.2f} {unit}) "
+                "to the candidate + benchmark total for each base."
+            )
+        if use_base_names and len(base_names) > 1:
+            st.info(
+                f"The calculation is duplicated for {len(base_names)} bases. "
+                f"Grand total across all named bases: {grand_total_all_bases:.2f} {unit}."
             )
 
     bottle_rows = []
@@ -1246,13 +1370,16 @@ else:
             st.info("Set at least one benchmark to calculate bottles / packs to buy.")
 
     st.info(
-        "Formula used: required quantity per product = samples required × amount per sample × "
-        "(1 + loss / overage margin %)."
+        "Formula used: required quantity per candidate / benchmark = samples required × amount per sample × "
+        "(1 + loss / overage margin %). Extra-stage quantity = packaging size × number of bottles; "
+        "this is added directly to the final total when activated."
     )
 
     export_sheets = {"Required Quantity": summary_df}
     if not bottle_df.empty:
         export_sheets["Benchmark Bottles"] = bottle_df
+    if extra_stage_rows:
+        export_sheets["Extra Stages"] = pd.DataFrame(extra_stage_rows)
     excel_data = to_excel_sheets(export_sheets)
     st.download_button(
         label="📥 Download quantity calculation",
