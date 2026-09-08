@@ -661,13 +661,13 @@ def calculate_base_quantities(
 # Streamlit UI
 # ============================================================
 
-st.set_page_config(page_title="Sensory Rotation Planner", page_icon="🧪", layout="wide")
-st.title("🧪 Sensory Test Planning Toolkit")
+st.set_page_config(page_title="CMI EU Test Planing Tool Kit", page_icon="🧪", layout="wide")
+st.title("🧪 CMI EU Test Planing Tool Kit")
 
 st.sidebar.header("Menu")
 app_page = st.sidebar.radio(
     "Choose a tool",
-    ["Rotation Planner", "Base Quantity Calculator"],
+    ["Base Quantity Calculator", "Rotation Planner"],
 )
 
 
@@ -1095,6 +1095,25 @@ else:
         "Calculate product quantity for candidates and benchmarks, including a configurable loss / overage margin."
     )
 
+    # Optional base naming. When several bases are entered, the output table is
+    # duplicated for each base so the required quantity can be tracked separately.
+    use_base_names = st.checkbox(
+        "Add name of the base to be used",
+        value=False,
+        help="Enable this if you want the required quantity table to identify one or several bases.",
+    )
+    base_names = [""]
+    if use_base_names:
+        base_text = st.text_area(
+            "Base name(s)",
+            value="",
+            placeholder="Example:\nBase A\nBase B",
+            help="Enter one base per line, or separate several base names with commas. The calculation rows will be duplicated for each base.",
+        )
+        normalized = base_text.replace(",", "\n")
+        parsed_bases = [x.strip() for x in normalized.splitlines() if x.strip()]
+        base_names = parsed_bases if parsed_bases else [""]
+
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("#### Candidates")
@@ -1157,62 +1176,88 @@ else:
         density_kg_per_l=density,
     )
 
-    st.markdown("### Required quantity")
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Per candidate incl. margin", f"{result['per_candidate_with_loss']:.2f} {unit}")
-    m2.metric("All candidates incl. margin", f"{result['total_candidate_with_loss']:.2f} {unit}")
-    m3.metric("Per benchmark incl. margin", f"{result['per_benchmark_with_loss']:.2f} {unit}")
-    m4.metric("All benchmarks incl. margin", f"{result['total_benchmark_with_loss']:.2f} {unit}")
+    st.markdown("### Results")
+    required_tab, bottles_tab = st.tabs(["Required Quantity", "Benchmark Bottles"])
 
-    summary_df = pd.DataFrame([
-        {
+    # Only quantities including the additional margin are shown in the Required Quantity tab.
+    rows = []
+    for base_name in base_names:
+        candidate_row = {
             "Type": "Candidate",
             "Number of products": num_candidates,
             "Samples per product": samples_per_candidate,
-            f"Base quantity per product ({unit})": result["per_candidate_base"],
             f"Quantity per product incl. {loss_margin_pct:.1f}% margin ({unit})": result["per_candidate_with_loss"],
-            f"Total base quantity ({unit})": result["total_candidate_base"],
-            f"Total incl. margin ({unit})": result["total_candidate_with_loss"],
-        },
-        {
+            f"Total required incl. {loss_margin_pct:.1f}% margin ({unit})": result["total_candidate_with_loss"],
+        }
+        benchmark_row = {
             "Type": "Benchmark",
             "Number of products": num_benchmarks,
             "Samples per product": samples_per_benchmark,
-            f"Base quantity per product ({unit})": result["per_benchmark_base"],
             f"Quantity per product incl. {loss_margin_pct:.1f}% margin ({unit})": result["per_benchmark_with_loss"],
-            f"Total base quantity ({unit})": result["total_benchmark_base"],
-            f"Total incl. margin ({unit})": result["total_benchmark_with_loss"],
-        },
-    ])
-    st.dataframe(summary_df, use_container_width=True)
+            f"Total required incl. {loss_margin_pct:.1f}% margin ({unit})": result["total_benchmark_with_loss"],
+        }
+        if use_base_names:
+            candidate_row = {"Base name": base_name or "(not specified)", **candidate_row}
+            benchmark_row = {"Base name": base_name or "(not specified)", **benchmark_row}
+        rows.extend([candidate_row, benchmark_row])
 
+    summary_df = pd.DataFrame(rows)
+
+    with required_tab:
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Per candidate incl. margin", f"{result['per_candidate_with_loss']:.2f} {unit}")
+        m2.metric("All candidates incl. margin", f"{result['total_candidate_with_loss']:.2f} {unit}")
+        m3.metric("Per benchmark incl. margin", f"{result['per_benchmark_with_loss']:.2f} {unit}")
+        m4.metric("All benchmarks incl. margin", f"{result['total_benchmark_with_loss']:.2f} {unit}")
+        st.dataframe(summary_df, use_container_width=True)
+        if use_base_names and len(base_names) > 1:
+            st.caption(
+                f"The required quantity rows are duplicated for each of the {len(base_names)} bases entered."
+            )
+
+    bottle_rows = []
     if num_benchmarks > 0:
-        st.markdown("### Benchmark bottles to buy")
-        b1, b2 = st.columns(2)
-        b1.metric(
-            f"Bottles per benchmark ({bottle_size_ml} mL)",
-            result["bottles_per_benchmark"],
-        )
-        b2.metric("Total benchmark bottles", result["total_bottles"])
-        st.caption(
-            f"Bottle calculation uses the benchmark quantity including the {loss_margin_pct:.1f}% margin. "
-            f"Equivalent volume per benchmark: {result['benchmark_ml_with_loss']:.1f} mL."
-        )
+        for base_name in base_names:
+            row = {
+                "Bottle / pack size (mL)": bottle_size_ml,
+                "Benchmark quantity incl. margin (mL equivalent)": round(result["benchmark_ml_with_loss"], 2),
+                "Bottles per benchmark": result["bottles_per_benchmark"],
+                "Total benchmark bottles": result["total_bottles"],
+            }
+            if use_base_names:
+                row = {"Base name": base_name or "(not specified)", **row}
+            bottle_rows.append(row)
+    bottle_df = pd.DataFrame(bottle_rows)
+
+    with bottles_tab:
+        if num_benchmarks > 0:
+            b1, b2 = st.columns(2)
+            b1.metric(
+                f"Bottles per benchmark ({bottle_size_ml} mL)",
+                result["bottles_per_benchmark"],
+            )
+            b2.metric("Total benchmark bottles", result["total_bottles"])
+            st.caption(
+                f"Bottle calculation uses the benchmark quantity including the {loss_margin_pct:.1f}% margin. "
+                f"Equivalent volume per benchmark: {result['benchmark_ml_with_loss']:.1f} mL."
+            )
+            st.dataframe(bottle_df, use_container_width=True)
+        else:
+            st.info("Set at least one benchmark to calculate bottles / packs to buy.")
 
     st.info(
-        "Formula used: base quantity per product = samples required × amount per sample. "
-        "The loss margin is then added as an overage: required quantity = base quantity × (1 + margin %)."
+        "Formula used: required quantity per product = samples required × amount per sample × "
+        "(1 + loss / overage margin %)."
     )
 
-    calc_export = summary_df.copy()
-    calc_export["Bottle size (mL)"] = [None, bottle_size_ml]
-    calc_export["Bottles per benchmark"] = [None, result["bottles_per_benchmark"]]
-    calc_export["Total benchmark bottles"] = [None, result["total_bottles"]]
-
-    excel_data = to_excel_sheets({"Base Quantity": calc_export})
+    export_sheets = {"Required Quantity": summary_df}
+    if not bottle_df.empty:
+        export_sheets["Benchmark Bottles"] = bottle_df
+    excel_data = to_excel_sheets(export_sheets)
     st.download_button(
         label="📥 Download quantity calculation",
         data=excel_data,
         file_name="base_quantity_calculation.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
