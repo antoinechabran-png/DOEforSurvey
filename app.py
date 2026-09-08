@@ -1108,12 +1108,12 @@ else:
         "Calculate product quantity for candidates and benchmarks, including a configurable loss / overage margin."
     )
 
-    # Optional base naming. When several bases are entered, the output table is
+    # Optional base naming. When several bases are entered, the output tables are
     # duplicated for each base so the required quantity can be tracked separately.
     use_base_names = st.checkbox(
         "Add name of the base to be used",
         value=False,
-        help="Enable this if you want the required quantity table to identify one or several bases.",
+        help="Enable this if you want the quantity tables to identify one or several bases.",
     )
     base_names = [""]
     if use_base_names:
@@ -1121,7 +1121,10 @@ else:
             "Base name(s)",
             value="",
             placeholder="Example:\nBase A\nBase B",
-            help="Enter one base per line, or separate several base names with commas. The calculation rows will be duplicated for each base.",
+            help=(
+                "Enter one base per line, or separate several base names with commas. "
+                "Candidate and benchmark calculations will be duplicated for each base."
+            ),
         )
         normalized = base_text.replace(",", "\n")
         parsed_bases = [x.strip() for x in normalized.splitlines() if x.strip()]
@@ -1141,6 +1144,11 @@ else:
         samples_per_benchmark = int(st.number_input(
             "Samples required per benchmark", min_value=0, value=30, step=1
         ))
+        bottle_size_ml = st.selectbox(
+            "Benchmark bottle / pack size (mL)",
+            BOTTLE_SIZES_ML,
+            index=BOTTLE_SIZES_ML.index(250),
+        )
 
     st.markdown("#### Fill quantity")
     q1, q2, q3 = st.columns(3)
@@ -1170,21 +1178,14 @@ else:
             help="1.00 kg/L is approximately water. Change this for denser or lighter products.",
         ))
 
-    st.markdown("#### Benchmark bottle purchase")
-    bottle_size_ml = st.selectbox(
-        "Benchmark bottle / pack size (mL)",
-        BOTTLE_SIZES_ML,
-        index=BOTTLE_SIZES_ML.index(250),
-    )
-
     st.markdown("#### Extra samples for other stages")
     use_extra_stages = st.checkbox(
         "Add extra samples for other stages",
         value=False,
         help=(
             "Use this for additional preparation or testing stages such as dilution. "
-            "Enter the number of bottles required per candidate. The total stage quantity is "
-            "packaging size × bottles per candidate × number of candidates and is added to the final total."
+            "The bottle requirement is applied to every candidate and every benchmark, and the selected "
+            "loss / overage margin is added to this extra-stage base requirement as well."
         ),
     )
 
@@ -1198,12 +1199,12 @@ else:
             step=1,
         ))
         st.caption(
-            "The loss / overage margin is already applied to candidate and benchmark quantities. "
-            "For extra stages, the bottle requirement is per candidate; the app multiplies it by the "
-            "number of candidates. Extra-stage quantities are not given an additional margin."
+            "For each stage, enter the bottles required per candidate or benchmark. The app applies the same "
+            "requirement to each candidate and each benchmark, then adds the loss / overage margin before "
+            "adding the stage quantity to their respective required totals."
         )
         for i in range(num_extra_stages):
-            s1, s2, s3 = st.columns([1.6, 1.2, 1.2])
+            s1, s2, s3 = st.columns([1.6, 1.2, 1.4])
             with s1:
                 stage_name = st.text_input(
                     f"Stage {i + 1} name",
@@ -1220,24 +1221,31 @@ else:
                 ))
             with s3:
                 bottles_required = int(st.number_input(
-                    f"Bottles required per candidate for stage {i + 1}",
+                    f"Bottles required per candidate or benchmark — stage {i + 1}",
                     min_value=0,
                     value=1,
                     step=1,
                     key=f"extra_stage_bottles_{i}",
                 ))
 
-            quantity_per_candidate_ml = package_size_ml * bottles_required
-            total_bottles = bottles_required * num_candidates
-            total_quantity_ml = quantity_per_candidate_ml * num_candidates
+            quantity_per_item_ml = package_size_ml * bottles_required
+            quantity_per_item_with_margin_ml = quantity_per_item_ml * (1 + loss_margin_pct / 100.0)
+
+            candidate_total_bottles = bottles_required * num_candidates
+            benchmark_total_bottles = bottles_required * num_benchmarks
+            candidate_total_with_margin_ml = quantity_per_item_with_margin_ml * num_candidates
+            benchmark_total_with_margin_ml = quantity_per_item_with_margin_ml * num_benchmarks
+
             extra_stages.append({
                 "Stage": stage_name.strip() or f"Stage {i + 1}",
                 "Packaging size (mL)": package_size_ml,
-                "Bottles required per candidate": bottles_required,
-                "Number of candidates": num_candidates,
-                "Total bottles": total_bottles,
-                "Quantity per candidate (mL)": quantity_per_candidate_ml,
-                "Total quantity (mL)": total_quantity_ml,
+                "Bottles required per candidate or benchmark": bottles_required,
+                "Quantity per candidate or benchmark before margin (mL)": quantity_per_item_ml,
+                "Quantity per candidate or benchmark incl. margin (mL)": quantity_per_item_with_margin_ml,
+                "Candidate total bottles": candidate_total_bottles,
+                "Benchmark total bottles": benchmark_total_bottles,
+                "Candidate total incl. margin (mL)": candidate_total_with_margin_ml,
+                "Benchmark total incl. margin (mL)": benchmark_total_with_margin_ml,
             })
 
     result = calculate_base_quantities(
@@ -1252,146 +1260,271 @@ else:
         density_kg_per_l=density,
     )
 
-    extra_stage_ml = sum(stage["Total quantity (mL)"] for stage in extra_stages)
-    extra_stage_quantity = ml_to_quantity(extra_stage_ml, unit, density)
-    grand_total_per_base = (
-        result["total_candidate_with_loss"]
-        + result["total_benchmark_with_loss"]
-        + extra_stage_quantity
+    # Extra-stage requirements are split between candidates and benchmarks and include the margin.
+    extra_candidate_ml = sum(stage["Candidate total incl. margin (mL)"] for stage in extra_stages)
+    extra_benchmark_ml = sum(stage["Benchmark total incl. margin (mL)"] for stage in extra_stages)
+    extra_per_item_ml = sum(
+        stage["Quantity per candidate or benchmark incl. margin (mL)"] for stage in extra_stages
     )
+
+    extra_candidate_quantity = ml_to_quantity(extra_candidate_ml, unit, density)
+    extra_benchmark_quantity = ml_to_quantity(extra_benchmark_ml, unit, density)
+    extra_per_item_quantity = ml_to_quantity(extra_per_item_ml, unit, density)
+
+    candidate_total_per_base = result["total_candidate_with_loss"] + extra_candidate_quantity
+    benchmark_total_per_base = result["total_benchmark_with_loss"] + extra_benchmark_quantity
+    grand_total_per_base = candidate_total_per_base + benchmark_total_per_base
+
+    candidate_per_product_total = result["per_candidate_with_loss"] + extra_per_item_quantity
+    benchmark_per_product_total = result["per_benchmark_with_loss"] + extra_per_item_quantity
+
     number_of_bases = len(base_names) if use_base_names else 1
+    candidate_total_all_bases = candidate_total_per_base * number_of_bases
+    benchmark_total_all_bases = benchmark_total_per_base * number_of_bases
     grand_total_all_bases = grand_total_per_base * number_of_bases
 
-    st.markdown("### Results")
-    required_tab, bottles_tab = st.tabs(["Required Quantity", "Benchmark Bottles"])
+    # Benchmark bottle purchase is based on the complete benchmark requirement,
+    # including regular samples + all activated extra stages + the margin.
+    benchmark_regular_per_product_ml = quantity_to_ml(
+        result["per_benchmark_with_loss"], unit, density
+    )
+    benchmark_total_per_product_ml = benchmark_regular_per_product_ml + extra_per_item_ml
+    bottles_per_benchmark_total = (
+        math.ceil(benchmark_total_per_product_ml / bottle_size_ml)
+        if num_benchmarks > 0 and bottle_size_ml > 0
+        else 0
+    )
+    total_benchmark_bottles_to_buy = bottles_per_benchmark_total * num_benchmarks
 
-    # Only quantities including the additional margin are shown for candidates/benchmarks.
-    # Extra-stage quantities are exact package quantities and are added to the grand total.
-    rows = []
-    extra_stage_rows = []
+    st.markdown("### Results")
+    candidate_tab, benchmark_tab = st.tabs([
+        "Candidate quantity",
+        "Benchmark bottles and quantity",
+    ])
+
+    # ---------------- Candidate tab ----------------
+    candidate_rows = []
     for base_name in base_names:
-        candidate_row = {
+        base_label = base_name or "(not specified)"
+        regular_row = {
             "Type": "Candidate",
-            "Item / stage": "Candidate products",
-            "Number of products": num_candidates,
-            "Samples per product": samples_per_candidate,
+            "Item / stage": "Regular test samples",
+            "Number of candidates": num_candidates,
+            "Samples per candidate": samples_per_candidate,
             "Packaging size (mL)": np.nan,
-            "Bottles required per candidate": np.nan,
+            "Bottles required per candidate or benchmark": np.nan,
             "Total bottles": np.nan,
-            f"Quantity per product incl. {loss_margin_pct:.1f}% margin ({unit})": result["per_candidate_with_loss"],
-            f"Total required ({unit})": result["total_candidate_with_loss"],
-        }
-        benchmark_row = {
-            "Type": "Benchmark",
-            "Item / stage": "Benchmark products",
-            "Number of products": num_benchmarks,
-            "Samples per product": samples_per_benchmark,
-            "Packaging size (mL)": np.nan,
-            "Bottles required per candidate": np.nan,
-            "Total bottles": np.nan,
-            f"Quantity per product incl. {loss_margin_pct:.1f}% margin ({unit})": result["per_benchmark_with_loss"],
-            f"Total required ({unit})": result["total_benchmark_with_loss"],
+            f"Quantity per candidate incl. {loss_margin_pct:.1f}% margin ({unit})": result["per_candidate_with_loss"],
+            f"Total candidate quantity incl. margin ({unit})": result["total_candidate_with_loss"],
         }
         if use_base_names:
-            candidate_row = {"Base name": base_name or "(not specified)", **candidate_row}
-            benchmark_row = {"Base name": base_name or "(not specified)", **benchmark_row}
-        rows.extend([candidate_row, benchmark_row])
+            regular_row = {"Base name": base_label, **regular_row}
+        candidate_rows.append(regular_row)
 
         for stage in extra_stages:
-            stage_quantity_unit = ml_to_quantity(stage["Total quantity (mL)"], unit, density)
-            stage_row = {
+            row = {
                 "Type": "Extra stage",
                 "Item / stage": stage["Stage"],
-                "Number of products": num_candidates,
-                "Samples per product": np.nan,
+                "Number of candidates": num_candidates,
+                "Samples per candidate": np.nan,
                 "Packaging size (mL)": stage["Packaging size (mL)"],
-                "Bottles required per candidate": stage["Bottles required per candidate"],
-                "Total bottles": stage["Total bottles"],
-                f"Quantity per candidate ({unit})": ml_to_quantity(stage["Quantity per candidate (mL)"], unit, density),
-                f"Total required ({unit})": stage_quantity_unit,
+                "Bottles required per candidate or benchmark": stage["Bottles required per candidate or benchmark"],
+                "Total bottles": stage["Candidate total bottles"],
+                f"Quantity per candidate incl. {loss_margin_pct:.1f}% margin ({unit})": ml_to_quantity(
+                    stage["Quantity per candidate or benchmark incl. margin (mL)"], unit, density
+                ),
+                f"Total candidate quantity incl. margin ({unit})": ml_to_quantity(
+                    stage["Candidate total incl. margin (mL)"], unit, density
+                ),
             }
             if use_base_names:
-                stage_row = {"Base name": base_name or "(not specified)", **stage_row}
-            rows.append(stage_row)
-            extra_stage_rows.append(stage_row.copy())
+                row = {"Base name": base_label, **row}
+            candidate_rows.append(row)
 
         total_row = {
             "Type": "TOTAL",
-            "Item / stage": "Grand total incl. extra stages" if use_extra_stages else "Grand total",
-            "Number of products": np.nan,
-            "Samples per product": np.nan,
+            "Item / stage": "Total candidate requirement incl. extra stages",
+            "Number of candidates": num_candidates,
+            "Samples per candidate": np.nan,
             "Packaging size (mL)": np.nan,
-            "Bottles required per candidate": np.nan,
+            "Bottles required per candidate or benchmark": np.nan,
             "Total bottles": np.nan,
-            f"Quantity per product incl. {loss_margin_pct:.1f}% margin ({unit})": np.nan,
-            f"Total required ({unit})": grand_total_per_base,
+            f"Quantity per candidate incl. {loss_margin_pct:.1f}% margin ({unit})": candidate_per_product_total,
+            f"Total candidate quantity incl. margin ({unit})": candidate_total_per_base,
         }
         if use_base_names:
-            total_row = {"Base name": base_name or "(not specified)", **total_row}
-        rows.append(total_row)
+            total_row = {"Base name": base_label, **total_row}
+        candidate_rows.append(total_row)
 
-    summary_df = pd.DataFrame(rows)
+    candidate_df = pd.DataFrame(candidate_rows)
 
-    with required_tab:
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("All candidates incl. margin / base", f"{result['total_candidate_with_loss']:.2f} {unit}")
-        m2.metric("All benchmarks incl. margin / base", f"{result['total_benchmark_with_loss']:.2f} {unit}")
-        m3.metric("Extra stages / base", f"{extra_stage_quantity:.2f} {unit}")
-        m4.metric("Grand total / base", f"{grand_total_per_base:.2f} {unit}")
-        st.dataframe(summary_df, use_container_width=True)
+    with candidate_tab:
+        cmet1, cmet2, cmet3 = st.columns(3)
+        cmet1.metric(
+            "Regular candidate quantity / base",
+            f"{result['total_candidate_with_loss']:.2f} {unit}",
+        )
+        cmet2.metric(
+            "Extra stages for candidates / base",
+            f"{extra_candidate_quantity:.2f} {unit}",
+        )
+        cmet3.metric(
+            "Total candidate requirement / base",
+            f"{candidate_total_per_base:.2f} {unit}",
+        )
+        st.dataframe(candidate_df, use_container_width=True)
 
         if use_extra_stages:
             st.caption(
-                f"Extra stages add {extra_stage_ml:.1f} mL equivalent ({extra_stage_quantity:.2f} {unit}) "
-                f"across {num_candidates} candidate(s) to the candidate + benchmark total for each base."
+                f"Extra-stage candidate requirements include the {loss_margin_pct:.1f}% margin and add "
+                f"{extra_candidate_quantity:.2f} {unit} per base to the regular candidate requirement."
             )
         if use_base_names and len(base_names) > 1:
             st.info(
-                f"The calculation is duplicated for {len(base_names)} bases. "
-                f"Grand total across all named bases: {grand_total_all_bases:.2f} {unit}."
+                f"Candidate requirement across all {len(base_names)} named bases: "
+                f"{candidate_total_all_bases:.2f} {unit}."
             )
 
+    # ---------------- Benchmark tab ----------------
+    benchmark_rows = []
     bottle_rows = []
-    if num_benchmarks > 0:
-        for base_name in base_names:
+    for base_name in base_names:
+        base_label = base_name or "(not specified)"
+        regular_row = {
+            "Type": "Benchmark",
+            "Item / stage": "Regular test samples",
+            "Number of benchmarks": num_benchmarks,
+            "Samples per benchmark": samples_per_benchmark,
+            "Packaging size (mL)": np.nan,
+            "Bottles required per candidate or benchmark": np.nan,
+            "Total stage bottles": np.nan,
+            f"Quantity per benchmark incl. {loss_margin_pct:.1f}% margin ({unit})": result["per_benchmark_with_loss"],
+            f"Total benchmark quantity incl. margin ({unit})": result["total_benchmark_with_loss"],
+        }
+        if use_base_names:
+            regular_row = {"Base name": base_label, **regular_row}
+        benchmark_rows.append(regular_row)
+
+        for stage in extra_stages:
             row = {
-                "Bottle / pack size (mL)": bottle_size_ml,
-                "Benchmark quantity incl. margin (mL equivalent)": round(result["benchmark_ml_with_loss"], 2),
-                "Bottles per benchmark": result["bottles_per_benchmark"],
-                "Total benchmark bottles": result["total_bottles"],
+                "Type": "Extra stage",
+                "Item / stage": stage["Stage"],
+                "Number of benchmarks": num_benchmarks,
+                "Samples per benchmark": np.nan,
+                "Packaging size (mL)": stage["Packaging size (mL)"],
+                "Bottles required per candidate or benchmark": stage["Bottles required per candidate or benchmark"],
+                "Total stage bottles": stage["Benchmark total bottles"],
+                f"Quantity per benchmark incl. {loss_margin_pct:.1f}% margin ({unit})": ml_to_quantity(
+                    stage["Quantity per candidate or benchmark incl. margin (mL)"], unit, density
+                ),
+                f"Total benchmark quantity incl. margin ({unit})": ml_to_quantity(
+                    stage["Benchmark total incl. margin (mL)"], unit, density
+                ),
             }
             if use_base_names:
-                row = {"Base name": base_name or "(not specified)", **row}
-            bottle_rows.append(row)
+                row = {"Base name": base_label, **row}
+            benchmark_rows.append(row)
+
+        total_row = {
+            "Type": "TOTAL",
+            "Item / stage": "Total benchmark requirement incl. extra stages",
+            "Number of benchmarks": num_benchmarks,
+            "Samples per benchmark": np.nan,
+            "Packaging size (mL)": np.nan,
+            "Bottles required per candidate or benchmark": np.nan,
+            "Total stage bottles": np.nan,
+            f"Quantity per benchmark incl. {loss_margin_pct:.1f}% margin ({unit})": benchmark_per_product_total,
+            f"Total benchmark quantity incl. margin ({unit})": benchmark_total_per_base,
+        }
+        if use_base_names:
+            total_row = {"Base name": base_label, **total_row}
+        benchmark_rows.append(total_row)
+
+        if num_benchmarks > 0:
+            bottle_row = {
+                "Benchmark bottle / pack size (mL)": bottle_size_ml,
+                "Regular quantity per benchmark incl. margin (mL eq.)": round(benchmark_regular_per_product_ml, 2),
+                "Extra-stage quantity per benchmark incl. margin (mL eq.)": round(extra_per_item_ml, 2),
+                "Total quantity per benchmark incl. margin (mL eq.)": round(benchmark_total_per_product_ml, 2),
+                "Bottles to buy per benchmark": bottles_per_benchmark_total,
+                "Number of benchmarks": num_benchmarks,
+                "Total benchmark bottles to buy": total_benchmark_bottles_to_buy,
+            }
+            if use_base_names:
+                bottle_row = {"Base name": base_label, **bottle_row}
+            bottle_rows.append(bottle_row)
+
+    benchmark_df = pd.DataFrame(benchmark_rows)
     bottle_df = pd.DataFrame(bottle_rows)
 
-    with bottles_tab:
+    with benchmark_tab:
+        bmet1, bmet2, bmet3 = st.columns(3)
+        bmet1.metric(
+            "Regular benchmark quantity / base",
+            f"{result['total_benchmark_with_loss']:.2f} {unit}",
+        )
+        bmet2.metric(
+            "Extra stages for benchmarks / base",
+            f"{extra_benchmark_quantity:.2f} {unit}",
+        )
+        bmet3.metric(
+            "Total benchmark requirement / base",
+            f"{benchmark_total_per_base:.2f} {unit}",
+        )
+        st.dataframe(benchmark_df, use_container_width=True)
+
+        st.markdown("#### Benchmark bottles to purchase")
         if num_benchmarks > 0:
-            b1, b2 = st.columns(2)
-            b1.metric(
-                f"Bottles per benchmark ({bottle_size_ml} mL)",
-                result["bottles_per_benchmark"],
+            bm1, bm2, bm3 = st.columns(3)
+            bm1.metric(
+                f"Bottle / pack size",
+                f"{bottle_size_ml} mL",
             )
-            b2.metric("Total benchmark bottles", result["total_bottles"])
+            bm2.metric(
+                "Bottles to buy per benchmark",
+                bottles_per_benchmark_total,
+            )
+            bm3.metric(
+                "Total benchmark bottles to buy",
+                total_benchmark_bottles_to_buy,
+            )
             st.caption(
-                f"Bottle calculation uses the benchmark quantity including the {loss_margin_pct:.1f}% margin. "
-                f"Equivalent volume per benchmark: {result['benchmark_ml_with_loss']:.1f} mL."
+                f"Bottle purchase uses the full benchmark requirement: regular test quantity + activated "
+                f"extra-stage quantities, all including the {loss_margin_pct:.1f}% margin. "
+                f"Total requirement per benchmark = {benchmark_total_per_product_ml:.1f} mL equivalent."
             )
             st.dataframe(bottle_df, use_container_width=True)
         else:
-            st.info("Set at least one benchmark to calculate bottles / packs to buy.")
+            st.info("Set at least one benchmark to calculate benchmark quantity and bottles / packs to buy.")
+
+        if use_base_names and len(base_names) > 1:
+            st.info(
+                f"Benchmark requirement across all {len(base_names)} named bases: "
+                f"{benchmark_total_all_bases:.2f} {unit}."
+            )
 
     st.info(
-        "Formula used: required quantity per candidate / benchmark = samples required × amount per sample × "
-        "(1 + loss / overage margin %). Extra-stage quantity = packaging size × bottles required per candidate × "
-        "number of candidates; this is added directly to the final total when activated."
+        "Formula used: regular required quantity per candidate / benchmark = samples required × amount per sample × "
+        "(1 + loss / overage margin %). Extra-stage requirement per candidate or benchmark = packaging size × "
+        "bottles required × (1 + loss / overage margin %). Candidate and benchmark stage quantities are then "
+        "multiplied by their respective counts and added to their respective totals."
     )
 
-    export_sheets = {"Required Quantity": summary_df}
+    if use_base_names and len(base_names) > 1:
+        st.caption(
+            f"Overall requirement across candidates + benchmarks and all named bases: "
+            f"{grand_total_all_bases:.2f} {unit}."
+        )
+
+    export_sheets = {
+        "Candidate Quantity": candidate_df,
+        "Benchmark bottles and quantity": benchmark_df,
+    }
     if not bottle_df.empty:
+        # Keep benchmark bottle purchase information on the benchmark side of the workbook.
+        # XlsxWriter limits sheet names to 31 characters, so this companion sheet is short.
         export_sheets["Benchmark Bottles"] = bottle_df
-    if extra_stage_rows:
-        export_sheets["Extra Stages"] = pd.DataFrame(extra_stage_rows)
+
     excel_data = to_excel_sheets(export_sheets)
     st.download_button(
         label="📥 Download quantity calculation",
@@ -1399,4 +1532,3 @@ else:
         file_name="base_quantity_calculation.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
-
