@@ -1108,28 +1108,6 @@ else:
         "Calculate product quantity for candidates and benchmarks, including a configurable loss / overage margin."
     )
 
-    # Optional base naming. When several bases are entered, the output tables are
-    # duplicated for each base so the required quantity can be tracked separately.
-    use_base_names = st.checkbox(
-        "Add name of the base to be used",
-        value=False,
-        help="Enable this if you want the quantity tables to identify one or several bases.",
-    )
-    base_names = [""]
-    if use_base_names:
-        base_text = st.text_area(
-            "Base name(s)",
-            value="",
-            placeholder="Example:\nBase A\nBase B",
-            help=(
-                "Enter one base per line, or separate several base names with commas. "
-                "Candidate and benchmark calculations will be duplicated for each base."
-            ),
-        )
-        normalized = base_text.replace(",", "\n")
-        parsed_bases = [x.strip() for x in normalized.splitlines() if x.strip()]
-        base_names = parsed_bases if parsed_bases else [""]
-
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("#### Candidates")
@@ -1137,6 +1115,27 @@ else:
         samples_per_candidate = int(st.number_input(
             "Samples required per candidate", min_value=0, value=30, step=1
         ))
+
+        use_candidate_base_names = st.checkbox(
+            "Add candidate base name(s)",
+            value=False,
+            help="Enable this if candidates use one or several named bases.",
+        )
+        candidate_base_names = [""]
+        if use_candidate_base_names:
+            candidate_base_text = st.text_area(
+                "Candidate base name(s)",
+                value="",
+                placeholder="Example:\nBase A\nBase B",
+                help=(
+                    "Enter one base per line, or separate several base names with commas. "
+                    "The candidate quantity output will be duplicated for each base."
+                ),
+                key="candidate_base_names",
+            )
+            normalized = candidate_base_text.replace(",", "\n")
+            parsed_bases = [x.strip() for x in normalized.splitlines() if x.strip()]
+            candidate_base_names = parsed_bases if parsed_bases else [""]
 
     with c2:
         st.markdown("#### Benchmarks")
@@ -1278,10 +1277,8 @@ else:
     candidate_per_product_total = result["per_candidate_with_loss"] + extra_per_item_quantity
     benchmark_per_product_total = result["per_benchmark_with_loss"] + extra_per_item_quantity
 
-    number_of_bases = len(base_names) if use_base_names else 1
-    candidate_total_all_bases = candidate_total_per_base * number_of_bases
-    benchmark_total_all_bases = benchmark_total_per_base * number_of_bases
-    grand_total_all_bases = grand_total_per_base * number_of_bases
+    number_of_candidate_bases = len(candidate_base_names) if use_candidate_base_names else 1
+    candidate_total_all_bases = candidate_total_per_base * number_of_candidate_bases
 
     # Benchmark bottle purchase is based on the complete benchmark requirement,
     # including regular samples + all activated extra stages + the margin.
@@ -1307,7 +1304,7 @@ else:
     # without horizontal scrolling. The Excel export below retains the full detail.
     candidate_rows = []
     candidate_stage_rows = []
-    for base_name in base_names:
+    for base_name in candidate_base_names:
         base_label = base_name or "(not specified)"
 
         regular_row = {
@@ -1315,7 +1312,7 @@ else:
             f"Per candidate ({unit})": result["per_candidate_with_loss"],
             f"Total ({unit})": result["total_candidate_with_loss"],
         }
-        if use_base_names:
+        if use_candidate_base_names:
             regular_row = {"Base": base_label, **regular_row}
         candidate_rows.append(regular_row)
 
@@ -1329,7 +1326,7 @@ else:
                     stage["Candidate total incl. margin (mL)"], unit, density
                 ),
             }
-            if use_base_names:
+            if use_candidate_base_names:
                 stage_row = {"Base": base_label, **stage_row}
             candidate_rows.append(stage_row)
 
@@ -1339,7 +1336,7 @@ else:
                 "Bottles / candidate or benchmark": stage["Bottles required per candidate or benchmark"],
                 "Total candidate bottles": stage["Candidate total bottles"],
             }
-            if use_base_names:
+            if use_candidate_base_names:
                 stage_detail = {"Base": base_label, **stage_detail}
             candidate_stage_rows.append(stage_detail)
 
@@ -1348,7 +1345,7 @@ else:
             f"Per candidate ({unit})": candidate_per_product_total,
             f"Total ({unit})": candidate_total_per_base,
         }
-        if use_base_names:
+        if use_candidate_base_names:
             total_row = {"Base": base_label, **total_row}
         candidate_rows.append(total_row)
 
@@ -1357,7 +1354,7 @@ else:
 
     # Full-detail dataframe retained for Excel export.
     candidate_export_rows = []
-    for base_name in base_names:
+    for base_name in candidate_base_names:
         base_label = base_name or "(not specified)"
         regular_row = {
             "Type": "Candidate",
@@ -1370,7 +1367,7 @@ else:
             f"Quantity per candidate incl. {loss_margin_pct:.1f}% margin ({unit})": result["per_candidate_with_loss"],
             f"Total candidate quantity incl. margin ({unit})": result["total_candidate_with_loss"],
         }
-        if use_base_names:
+        if use_candidate_base_names:
             regular_row = {"Base name": base_label, **regular_row}
         candidate_export_rows.append(regular_row)
 
@@ -1390,7 +1387,7 @@ else:
                     stage["Candidate total incl. margin (mL)"], unit, density
                 ),
             }
-            if use_base_names:
+            if use_candidate_base_names:
                 row = {"Base name": base_label, **row}
             candidate_export_rows.append(row)
 
@@ -1405,7 +1402,7 @@ else:
             f"Quantity per candidate incl. {loss_margin_pct:.1f}% margin ({unit})": candidate_per_product_total,
             f"Total candidate quantity incl. margin ({unit})": candidate_total_per_base,
         }
-        if use_base_names:
+        if use_candidate_base_names:
             total_row = {"Base name": base_label, **total_row}
         candidate_export_rows.append(total_row)
 
@@ -1435,9 +1432,9 @@ else:
             st.markdown("#### Extra-stage packaging")
             st.dataframe(candidate_stage_df_display, use_container_width=True, hide_index=True)
 
-        if use_base_names and len(base_names) > 1:
+        if use_candidate_base_names and len(candidate_base_names) > 1:
             st.info(
-                f"Candidate requirement across all {len(base_names)} named bases: "
+                f"Candidate requirement across all {len(candidate_base_names)} named bases: "
                 f"{candidate_total_all_bases:.2f} {unit}."
             )
 
@@ -1448,7 +1445,7 @@ else:
     benchmark_export_rows = []
     bottle_rows = []
 
-    for base_name in base_names:
+    for base_name in [""]:
         base_label = base_name or "(not specified)"
 
         regular_row = {
@@ -1456,8 +1453,6 @@ else:
             f"Per benchmark ({unit})": result["per_benchmark_with_loss"],
             f"Total ({unit})": result["total_benchmark_with_loss"],
         }
-        if use_base_names:
-            regular_row = {"Base": base_label, **regular_row}
         benchmark_rows.append(regular_row)
 
         export_regular_row = {
@@ -1471,8 +1466,6 @@ else:
             f"Quantity per benchmark incl. {loss_margin_pct:.1f}% margin ({unit})": result["per_benchmark_with_loss"],
             f"Total benchmark quantity incl. margin ({unit})": result["total_benchmark_with_loss"],
         }
-        if use_base_names:
-            export_regular_row = {"Base name": base_label, **export_regular_row}
         benchmark_export_rows.append(export_regular_row)
 
         for stage in extra_stages:
@@ -1485,8 +1478,6 @@ else:
                     stage["Benchmark total incl. margin (mL)"], unit, density
                 ),
             }
-            if use_base_names:
-                stage_row = {"Base": base_label, **stage_row}
             benchmark_rows.append(stage_row)
 
             stage_detail = {
@@ -1495,8 +1486,6 @@ else:
                 "Bottles / candidate or benchmark": stage["Bottles required per candidate or benchmark"],
                 "Total benchmark bottles": stage["Benchmark total bottles"],
             }
-            if use_base_names:
-                stage_detail = {"Base": base_label, **stage_detail}
             benchmark_stage_rows.append(stage_detail)
 
             export_row = {
@@ -1514,8 +1503,6 @@ else:
                     stage["Benchmark total incl. margin (mL)"], unit, density
                 ),
             }
-            if use_base_names:
-                export_row = {"Base name": base_label, **export_row}
             benchmark_export_rows.append(export_row)
 
         total_row = {
@@ -1523,8 +1510,6 @@ else:
             f"Per benchmark ({unit})": benchmark_per_product_total,
             f"Total ({unit})": benchmark_total_per_base,
         }
-        if use_base_names:
-            total_row = {"Base": base_label, **total_row}
         benchmark_rows.append(total_row)
 
         export_total_row = {
@@ -1538,8 +1523,6 @@ else:
             f"Quantity per benchmark incl. {loss_margin_pct:.1f}% margin ({unit})": benchmark_per_product_total,
             f"Total benchmark quantity incl. margin ({unit})": benchmark_total_per_base,
         }
-        if use_base_names:
-            export_total_row = {"Base name": base_label, **export_total_row}
         benchmark_export_rows.append(export_total_row)
 
         if num_benchmarks > 0:
@@ -1549,8 +1532,6 @@ else:
                 "Bottles / benchmark": bottles_per_benchmark_total,
                 "Total bottles": total_benchmark_bottles_to_buy,
             }
-            if use_base_names:
-                bottle_display = {"Base": base_label, **bottle_display}
             bottle_rows_display.append(bottle_display)
 
             bottle_row = {
@@ -1562,8 +1543,6 @@ else:
                 "Number of benchmarks": num_benchmarks,
                 "Total benchmark bottles to buy": total_benchmark_bottles_to_buy,
             }
-            if use_base_names:
-                bottle_row = {"Base name": base_label, **bottle_row}
             bottle_rows.append(bottle_row)
 
     benchmark_df_display = pd.DataFrame(benchmark_rows)
@@ -1610,38 +1589,10 @@ else:
         else:
             st.info("Set at least one benchmark to calculate benchmark quantity and bottles / packs to buy.")
 
-        if use_base_names and len(base_names) > 1:
-            st.info(
-                f"Benchmark requirement across all {len(base_names)} named bases: "
-                f"{benchmark_total_all_bases:.2f} {unit}."
-            )
 
     st.info(
         "Formula used: regular required quantity per candidate / benchmark = samples required × amount per sample × "
         "(1 + loss / overage margin %). Extra-stage requirement per candidate or benchmark = packaging size × "
         "bottles required × (1 + loss / overage margin %). Candidate and benchmark stage quantities are then "
         "multiplied by their respective counts and added to their respective totals."
-    )
-
-    if use_base_names and len(base_names) > 1:
-        st.caption(
-            f"Overall requirement across candidates + benchmarks and all named bases: "
-            f"{grand_total_all_bases:.2f} {unit}."
-        )
-
-    export_sheets = {
-        "Candidate Quantity": candidate_df,
-        "Benchmark bottles and quantity": benchmark_df,
-    }
-    if not bottle_df.empty:
-        # Keep benchmark bottle purchase information on the benchmark side of the workbook.
-        # XlsxWriter limits sheet names to 31 characters, so this companion sheet is short.
-        export_sheets["Benchmark Bottles"] = bottle_df
-
-    excel_data = to_excel_sheets(export_sheets)
-    st.download_button(
-        label="📥 Download quantity calculation",
-        data=excel_data,
-        file_name="base_quantity_calculation.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
