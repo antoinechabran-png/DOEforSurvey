@@ -390,6 +390,49 @@ def generate_triangular(num_assessors, products, seed=1234):
 # Quota-locked logic
 # ============================================================
 
+
+def calculate_quota_locked_rotation_requirements(
+    total_products,
+    products_per_respondent,
+    target_respondents_per_product,
+    respondents_per_rotation,
+):
+    """
+    Calculate the minimum whole-number of rotations needed when every rotation
+    is assigned the same number of respondents.
+
+    A product included in one rotation receives `respondents_per_rotation`
+    evaluations. Therefore each product must appear in at least
+    ceil(target_respondents_per_product / respondents_per_rotation) rotations.
+    The total number of required product-in-rotation appearances is then
+    total_products * required_appearances_per_product, and each rotation provides
+    `products_per_respondent` such appearances.
+    """
+    v = int(total_products)
+    k = int(products_per_respondent)
+    target = int(target_respondents_per_product)
+    per_rotation = int(respondents_per_rotation)
+
+    if v < 1 or k < 1 or per_rotation < 1 or target < 1:
+        raise ValueError("All rotation-planning inputs must be greater than 0.")
+
+    required_product_rotations = int(math.ceil(target / per_rotation))
+    num_rotations = int(math.ceil(v * required_product_rotations / k))
+    total_respondents = num_rotations * per_rotation
+    total_product_evaluations = total_respondents * k
+    average_evaluations_per_product = total_product_evaluations / v
+    minimum_batch_exposure = required_product_rotations * per_rotation
+
+    return {
+        "required_product_rotations": required_product_rotations,
+        "num_rotations": num_rotations,
+        "total_respondents": total_respondents,
+        "total_product_evaluations": total_product_evaluations,
+        "average_evaluations_per_product": average_evaluations_per_product,
+        "minimum_batch_exposure": minimum_batch_exposure,
+        "exact_target_multiple_of_rotation_size": target % per_rotation == 0,
+    }
+
 def allocate_quota_by_rotation(num_rotations, respondents_per_rotation, proportions):
     """
     Return a [rotation x category] integer allocation.
@@ -734,7 +777,16 @@ if app_page == "Rotation Planner":
                 max_value=max(2, num_prods - 1),
                 value=min(6, max(2, num_prods - 1)),
             ))
-            num_rotations = int(st.number_input("Number of rotations", min_value=2, value=num_prods, step=1))
+            target_respondents_per_product = int(st.number_input(
+                "Desired respondents per product / code",
+                min_value=1,
+                value=108,
+                step=1,
+                help=(
+                    "Target number of respondent evaluations wanted for each product/code. "
+                    "The app can use this to calculate the required number of rotations."
+                ),
+            ))
         with right:
             respondents_per_rotation = int(st.number_input(
                 "Respondents per rotation", min_value=1, value=18, step=1
@@ -743,6 +795,75 @@ if app_page == "Rotation Planner":
                 "Incomplete-block engine",
                 ["Optimized balanced", "Cyclic"],
             )
+
+        rotation_count_mode = st.radio(
+            "How should the number of rotations be determined?",
+            [
+                "Calculate automatically from respondents per product",
+                "Set number of rotations manually",
+            ],
+            horizontal=True,
+        )
+
+        auto_requirements = calculate_quota_locked_rotation_requirements(
+            num_prods,
+            k,
+            target_respondents_per_product,
+            respondents_per_rotation,
+        )
+
+        if rotation_count_mode == "Calculate automatically from respondents per product":
+            num_rotations = auto_requirements["num_rotations"]
+            required_product_rotations = auto_requirements["required_product_rotations"]
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Calculated rotations", num_rotations)
+            m2.metric("Product appearances needed", required_product_rotations)
+            m3.metric("Planned respondents", auto_requirements["total_respondents"])
+            m4.metric(
+                "Avg. evaluations / product",
+                f'{auto_requirements["average_evaluations_per_product"]:.1f}',
+            )
+
+            st.caption(
+                f"Calculation: each product must be present in at least "
+                f"ceil({target_respondents_per_product} / {respondents_per_rotation}) = "
+                f"{required_product_rotations} rotations. With {num_prods} products and "
+                f"{k} products per rotation, the minimum is "
+                f"ceil({num_prods} × {required_product_rotations} / {k}) = {num_rotations} rotations."
+            )
+
+            if not auto_requirements["exact_target_multiple_of_rotation_size"]:
+                st.warning(
+                    f"{target_respondents_per_product} is not a multiple of "
+                    f"{respondents_per_rotation}. Because respondents are assigned in whole "
+                    f"rotation groups, a product appearing {required_product_rotations} times "
+                    f"would receive {auto_requirements['minimum_batch_exposure']} evaluations. "
+                    "The generated design therefore targets at least the requested base rather than "
+                    "an exact count for every product."
+                )
+        else:
+            num_rotations = int(st.number_input(
+                "Number of rotations",
+                min_value=2,
+                value=max(2, auto_requirements["num_rotations"]),
+                step=1,
+            ))
+            required_product_rotations = int(math.ceil(
+                target_respondents_per_product / respondents_per_rotation
+            ))
+            planned_avg = num_rotations * k * respondents_per_rotation / num_prods
+            st.info(
+                f"With {num_rotations} rotations × {respondents_per_rotation} respondents, "
+                f"the design contains {num_rotations * respondents_per_rotation} respondents "
+                f"and averages {planned_avg:.1f} evaluations per product."
+            )
+            if planned_avg < target_respondents_per_product:
+                st.warning(
+                    "The manually selected number of rotations is too low on average to reach "
+                    "the desired respondents per product. Increase the number of rotations or "
+                    "respondents per rotation."
+                )
 
         st.markdown("#### Recruitment targets / quotas")
         st.caption(
@@ -799,7 +920,11 @@ if app_page == "Rotation Planner":
         )
 
         total_n = num_rotations * respondents_per_rotation
-        st.info(f"Planned sample size: {num_rotations} rotations × {respondents_per_rotation} respondents = {total_n} respondents.")
+        total_evaluations = total_n * k
+        st.info(
+            f"Planned sample size: {num_rotations} rotations × {respondents_per_rotation} respondents "
+            f"= {total_n} respondents, producing {total_evaluations} product evaluations in total."
+        )
 
         if quota_errors:
             for err in quota_errors:
@@ -813,19 +938,30 @@ if app_page == "Rotation Planner":
             if rotation_engine == "Cyclic":
                 rotation_df = generate_cyclic_ibd(num_prods, k, num_rotations, product_list, seed)
             else:
-                # Choose a target replication that produces about the requested number of rotations,
-                # then trim/extend to exactly num_rotations.
-                approx_r = max(1, round(num_rotations * k / num_prods))
-                rotation_df, _ = generate_balanced_ibd(num_prods, k, approx_r, product_list, seed)
-                if len(rotation_df) > num_rotations:
-                    rotation_df = rotation_df.iloc[:num_rotations].copy()
-                elif len(rotation_df) < num_rotations:
-                    extra = generate_cyclic_ibd(
-                        num_prods, k, num_rotations - len(rotation_df), product_list, seed + 99
+                if rotation_count_mode == "Calculate automatically from respondents per product":
+                    # In automatic mode the target replication in rotation blocks is known:
+                    # one product appearance supplies respondents_per_rotation evaluations.
+                    rotation_df, _ = generate_balanced_ibd(
+                        num_prods,
+                        k,
+                        required_product_rotations,
+                        product_list,
+                        seed,
                     )
-                    extra["Rotation"] = [f"Rotation {len(rotation_df) + i + 1}" for i in range(len(extra))]
-                    rotation_df = pd.concat([rotation_df, extra], ignore_index=True)
-                rotation_df["Rotation"] = [f"Rotation {i + 1}" for i in range(len(rotation_df))]
+                else:
+                    # In manual mode, choose a balanced replication close to the requested
+                    # number of rotations, then trim/extend to the manual rotation count.
+                    approx_r = max(1, round(num_rotations * k / num_prods))
+                    rotation_df, _ = generate_balanced_ibd(num_prods, k, approx_r, product_list, seed)
+                    if len(rotation_df) > num_rotations:
+                        rotation_df = rotation_df.iloc[:num_rotations].copy()
+                    elif len(rotation_df) < num_rotations:
+                        extra = generate_cyclic_ibd(
+                            num_prods, k, num_rotations - len(rotation_df), product_list, seed + 99
+                        )
+                        extra["Rotation"] = [f"Rotation {len(rotation_df) + i + 1}" for i in range(len(extra))]
+                        rotation_df = pd.concat([rotation_df, extra], ignore_index=True)
+                    rotation_df["Rotation"] = [f"Rotation {i + 1}" for i in range(len(rotation_df))]
 
             slots_df, quota_summary_df, intersection_df = build_quota_slots(
                 num_rotations,
@@ -848,9 +984,48 @@ if app_page == "Rotation Planner":
             exposure["Expected respondent evaluations"] = (
                 exposure["Total appearances"] * respondents_per_rotation
             )
+            exposure["Requested respondents per product"] = target_respondents_per_product
+            exposure["Difference vs requested"] = (
+                exposure["Expected respondent evaluations"] - target_respondents_per_product
+            )
+            exposure["Target reached"] = exposure["Expected respondent evaluations"] >= target_respondents_per_product
+
+            achieved_min = int(exposure["Expected respondent evaluations"].min())
+            achieved_max = int(exposure["Expected respondent evaluations"].max())
+            target_met_all = bool(exposure["Target reached"].all())
+
+            design_summary = pd.DataFrame([{
+                "Number of products": num_prods,
+                "Products per respondent": k,
+                "Requested respondents per product": target_respondents_per_product,
+                "Respondents per rotation": respondents_per_rotation,
+                "Number of rotations": num_rotations,
+                "Total respondents": total_n,
+                "Total product evaluations": total_n * k,
+                "Min expected evaluations per product": achieved_min,
+                "Max expected evaluations per product": achieved_max,
+                "Target reached for every product": target_met_all,
+                "Rotation count mode": rotation_count_mode,
+                "Rotation engine": rotation_engine,
+            }])
+
+            if target_met_all:
+                st.success(
+                    f"Product base check: every code receives at least "
+                    f"{target_respondents_per_product} evaluations "
+                    f"(achieved range: {achieved_min}–{achieved_max})."
+                )
+            else:
+                st.warning(
+                    f"Product base check: the generated plan does not reach the requested "
+                    f"{target_respondents_per_product} evaluations for every code "
+                    f"(achieved range: {achieved_min}–{achieved_max}). Try the Optimized balanced "
+                    "engine, increase rotations, or increase respondents per rotation."
+                )
 
             overall_targets = quota_target_table(target_defs, total_n)
             generated_sheets = {
+                "Design Summary": design_summary,
                 "Rotations": rotation_df,
                 "Quota by Rotation": quota_summary_df,
                 "Recruitment Slots": assignment_df,
